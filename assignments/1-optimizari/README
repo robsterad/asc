@@ -1,0 +1,75 @@
+    
+    
+=================================== 1. Varianta neoptima ===================================
+
+Se fac calculele exact cum sunt date, fara nicio optimizare de acces al memoriei.
+
+=================================== 2. Varianta BLAS ===================================
+
+C = A^t * B => cblas_dgemm cu TransA = CblasTrans, TransB = CblasNoTrans
+Blas se ocupa sa foloseasca versiunea transpusa a matricei A, fara schimbari in memorie.
+
+D = C * C^t => cblas_dsyrk (Symmetric Rank-K update) face inmultirea tinand cont de simetrie,
+respectandu-se cerinta de a tine cont de simetria lui D 
+
+while-ul => cblas_dsymv (Symmetric Matrix-Vector Multiplication) se foloseste de faptul ca D 
+e simetrica si foloseste doar triunghiul superior
+
+y = y + x => cblas_daxpy face o simpla adunare de vectori.
+
+
+=================================== 3. Varianta optima ===================================
+
+C = A^t * B =>
+-> loop blocking: impart matricea in blocuri 40*40, cat sa folosesc intreaga linie de cache
+din dreptul elementului de coloana adus. 
+-> folosesc loop unrolling pentru paralelism la nivel de 4 sau 8 instructiuni de inmultire +
+adunare la o variabila (si pentru mai putine check-uri ale buclei for)
+-> folosesc keyword-ul register pentru a prioritiza folosirea variabilelor de tip suma drept 
+registrii ai procesorului - practic ii semnalez compilatorului ca acea variabila va
+avea multe accesari.
+
+
+D = C * C^t =>
+-> calculez doar triunghiul superior (j_start = (i_b == j_b) ? i : j_b) 
+-> calculez pointeri de linie inainte de o bucla - unde doar incrementez acel pointer -
+pentru a evita calcule de tipul i * N in continuu
+-> cache blocking (identic ca mai sus)
+-> loop unrolling (identic ca mai sus)
+-> keyword-ul register pe sume (identic ca mai sus)
+
+while-ul combinat cu y = y + x => aceleasi optimizari ca mai sus
+
+
+=================================== Analiza Cachegrind ===================================
+
+    1. I Refs (Instruction References)
+
+    NEOPT : 4B -> datorita numarului mare de recalculari de adrese (i * N + k)
+    OPT_M : 2.3B -> numarul scade foarte mult datorita loop unrolling-ului si calcularii
+manuale ale adreselor prin incrementari in loc de operatii de IML
+    BLAS : 126M -> scris in assembly
+
+    2. D Refs (Data References) - numarul de accesari ale memoriei
+
+    NEOPT : 2.3B -> nu se utilizeaza toate valorile care au fost aduse in linia de cache
+odata cu o anumita valoare dintr-o coloana
+    OPT_M : 1B -> obtinut prin rezolvarea problemei de mai sus (prin loop blocking) si prin
+folosirea variabilelor de tip register pentru acumularea sumelor
+    BLAS : 50M
+
+    3. D1 misses si D1 miss rate (Eficienta cache-ului L1)
+
+    NEOPT : 140M / 6.1% -> cand se plimba pe coloana unei matrici, nu foloseste toate linia
+care este incarcata in L1 odata acea variabila
+    OPT_M : 9M / 0.9% -> cache blocking (cu B_SIZE=40)
+    BLAS : 5.9M / 11.9% -> putine accesari, de unde si creste rata miss-urilor
+
+    4. Branches si Mispredicts
+
+    NEOPT : 161M / 405k -> nu avem niciun loop unroll, deci se fac multe incercari de jump
+pentru for-uri
+    OPT_M : 23M / 1.2M -> loop unroll de factori 4 sau 8 reduce agresiv numarul de branch-uri,
+insa il face mai putin previzibil pentru branch predictor
+    BLAS : 6.6M / 130k
+    
